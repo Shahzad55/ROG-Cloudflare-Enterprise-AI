@@ -1,0 +1,8 @@
+.dev.vars
+.wrangler/
+node_modules/
+dist/
+.env*
+*.pdf
+*.docx
+*.xlsx
