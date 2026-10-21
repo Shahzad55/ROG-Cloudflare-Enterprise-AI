@@ -66,14 +66,24 @@ async function upload(request: Request, env: Env) {
 }
 
 async function extractText(object: R2ObjectBody, fileName: string, env: Env): Promise<string> {
-  const blob = new Blob([await object.arrayBuffer()], { type: object.httpMetadata?.contentType || "application/octet-stream" });
   const extension = fileName.toLowerCase().split(".").pop() || "";
-  if (["pdf", "docx"].includes(extension)) {
-    const converted = (await env.AI.toMarkdown({ name: fileName, blob })) as MarkdownResult;
-    if (converted.format === "error" || !converted.data) throw new Error(converted.error || `Could not convert ${fileName}`);
-    return converted.data;
+  if (!["pdf", "docx"].includes(extension)) return await object.text();
+
+  // Cloudflare Markdown Conversion handles PDF structure and OCR for scanned PDFs.
+  // Keep metadata off to reduce prompt noise; plain text is best for chunking/RAG.
+  const blob = new Blob([await object.arrayBuffer()], {
+    type: object.httpMetadata?.contentType || (extension === "pdf"
+      ? "application/pdf"
+      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+  });
+  const converted = (await env.AI.toMarkdown(
+    { name: fileName, blob },
+    { conversionOptions: { output: { format: "text" }, pdf: { metadata: false } } },
+  )) as MarkdownResult;
+  if (converted.format === "error" || !converted.data?.trim()) {
+    throw new Error(`OCR/text extraction failed for ${fileName}: ${converted.error || "no text detected"}`);
   }
-  return await object.text();
+  return converted.data;
 }
 
 async function indexDocument(message: IndexMessage, env: Env) {

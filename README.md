@@ -2,6 +2,12 @@
 
 A Persian, document-grounded enterprise AI assistant for stores, construction companies, manufacturers, and business teams.
 
+## OCR for scanned PDFs
+
+PDF and DOCX uploads are processed with Cloudflare Workers AI Markdown Conversion via `env.AI.toMarkdown()`. Cloudflare parses PDF pages and applies its supported OCR path for scanned PDFs, then returns plain text for chunking and RAG. The Worker uses `conversionOptions.output.format = "text"` and removes PDF metadata before embedding.
+
+The MVP accepts PDF and DOCX files up to 10 MiB. Cloudflare's documented limits differ by PDF mode: PDFs with OCR enabled can be up to 10 MiB, while PDFs without OCR are limited to 4 MiB. If extraction returns no text, the Queue retries the message and logs an explicit extraction error instead of indexing an empty document.
+
 ## Architecture
 
 - **Cloudflare Worker**: authenticated API for upload and chat.
@@ -9,14 +15,10 @@ A Persian, document-grounded enterprise AI assistant for stores, construction co
 - **Queues**: asynchronous indexing path.
 - **D1**: document and chunk metadata.
 - **Vectorize V2**: semantic retrieval filtered by `tenantId`.
-- **Workers AI Markdown Conversion**: extracts text from PDF and DOCX.
+- **Workers AI Markdown Conversion**: PDF/DOCX extraction and OCR-capable conversion.
 - **Workers AI**: embeddings and grounded answer generation.
 
 GitHub stores code only. Do not upload confidential company documents to this repository.
-
-## Supported uploads
-
-The Worker accepts `.txt`, `.md`, `.json`, `.pdf`, and `.docx` files up to 10 MiB. PDF and DOCX are converted to Markdown by `env.AI.toMarkdown()` during asynchronous queue processing, then chunked, embedded, and stored in Vectorize. This uses Cloudflare's native Markdown Conversion instead of adding a fragile PDF/DOCX parser to the Worker.
 
 ## Cloudflare setup
 
@@ -31,29 +33,20 @@ npx wrangler d1 migrations apply rog-enterprise-db --remote
 npx wrangler deploy
 ```
 
-Copy the D1 database ID into `wrangler.toml` before deploy. The AI binding already enables Markdown Conversion. For production, replace the demo `x-tenant-id` header with real authentication and authorization.
+Copy the D1 database ID into `wrangler.toml` before deploy. For production, replace the demo `x-tenant-id` header with real authentication and authorization.
 
 ## API
-
-Upload a document:
 
 ```bash
 curl -X POST https://YOUR_WORKER/upload \
   -H 'x-tenant-id: acme' \
-  -F 'file=@company-policy.pdf'
-```
-
-Ask a grounded question:
-
-```bash
-curl -X POST https://YOUR_WORKER/chat \
-  -H 'content-type: application/json' \
-  -H 'x-tenant-id: acme' \
-  -d '{"question":"شرایط مرجوعی چیست؟"}'
+  -F 'file=@scanned-contract.pdf'
 ```
 
 Indexing is asynchronous. The upload response is `202 queued`; wait for the queue consumer to mark the document ready before querying it.
 
-## Important limits
+## References
 
-Cloudflare's Markdown Conversion supports PDF and Microsoft Office formats including DOCX. Keep files under 10 MiB for this MVP. For scanned PDFs, OCR and conversion limits apply. For larger or more complex ingestion, use a dedicated workflow or Cloudflare AI Search with R2 as a data source.
+- https://developers.cloudflare.com/workers-ai/features/markdown-conversion/usage/binding/
+- https://developers.cloudflare.com/workers-ai/features/markdown-conversion/conversion-options/
+- https://developers.cloudflare.com/ai-search/configuration/data-source/
