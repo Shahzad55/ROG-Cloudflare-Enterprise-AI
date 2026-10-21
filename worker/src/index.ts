@@ -6,11 +6,11 @@ interface Env {
   INDEX_QUEUE: Queue;
   EMBEDDING_MODEL: string;
   GENERATION_MODEL: string;
-  INGEST_SECRET?: string;
 }
 
-type IndexMessage = { documentId: string; tenantId: string; objectKey: string };
+type IndexMessage = { documentId: string; tenantId: string; objectKey: string; fileName: string };
 type EmbeddingResult = { shape: number[]; data: number[][] };
+type MarkdownResult = { name: string; format: string; data?: string; error?: string };
 
 const headers = {
   "content-type": "application/json; charset=utf-8",
@@ -47,26 +47,43 @@ async function upload(request: Request, env: Env) {
   const file = form.get("file");
   if (!(file instanceof File)) return json({ error: "file is required" }, 400);
   if (file.size > 10 * 1024 * 1024) return json({ error: "max file size is 10MB" }, 413);
-  if (!/\.(txt|md|json)$/i.test(file.name)) return json({ error: "MVP accepts .txt, .md, and .json files" }, 415);
+
+  const extension = file.name.toLowerCase().split(".").pop() || "";
+  const supported = ["txt", "md", "json", "pdf", "docx"];
+  if (!supported.includes(extension)) return json({ error: "supported files: .txt, .md, .json, .pdf, .docx" }, 415);
 
   const id = crypto.randomUUID();
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const objectKey = `${tenantId}/${id}/${safeName}`;
   await env.DOCUMENTS.put(objectKey, file.stream(), {
-    httpMetadata: { contentType: file.type || "text/plain" },
+    httpMetadata: { contentType: file.type || "application/octet-stream" },
     customMetadata: { tenantId, documentId: id, title: file.name },
   });
   await env.DB.prepare("INSERT INTO documents (id, tenant_id, object_key, title, content_type) VALUES (?, ?, ?, ?, ?)")
-    .bind(id, tenantId, objectKey, file.name, file.type || "text/plain").run();
-  await env.INDEX_QUEUE.send({ documentId: id, tenantId, objectKey } satisfies IndexMessage);
-  return json({ ok: true, id, status: "queued", title: file.name }, 202);
+    .bind(id, tenantId, objectKey, file.name, file.type || "application/octet-stream").run();
+  await env.INDEX_QUEUE.send({ documentId: id, tenantId, objectKey, fileName: file.name } satisfies IndexMessage);
+  return json({ ok: true, id, status: "queued", title: file.name, type: extension }, 202);
+}
+
+async function extractText(object: R2ObjectBody, fileName: string, env: Env): Promise<string> {
+  const blob = new Blob([await object.arrayBuffer()], { type: object.httpMetadata?.contentType || "application/octet-stream" });
+  const extension = fileName.toLowerCase().split(".").pop() || "";
+  if (["pdf", "docx"].includes(extension)) {
+    const converted = (await env.AI.toMarkdown({ name: fileName, blob })) as MarkdownResult;
+    if (converted.format === "error" || !converted.data) throw new Error(converted.error || `Could not convert ${fileName}`);
+    return converted.data;
+  }
+  return await object.text();
 }
 
 async function indexDocument(message: IndexMessage, env: Env) {
   const object = await env.DOCUMENTS.get(message.objectKey);
   if (!object) throw new Error(`R2 object not found: ${message.objectKey}`);
-  const parts = chunks(await object.text());
+  const text = await extractText(object, message.fileName, env);
+  const parts = chunks(text);
+  if (!parts.length) throw new Error("document contains no extractable text");
   const vectors = await embed(env, parts);
+
   await env.DB.prepare("DELETE FROM chunks WHERE document_id = ?").bind(message.documentId).run();
   await env.DB.batch(parts.map((part, i) => env.DB.prepare("INSERT INTO chunks (id, document_id, tenant_id, chunk_index, text) VALUES (?, ?, ?, ?, ?)")
     .bind(`${message.documentId}:${i}`, message.documentId, message.tenantId, i, part)));
