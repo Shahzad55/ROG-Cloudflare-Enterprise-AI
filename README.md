@@ -1,52 +1,54 @@
 # ROG Cloudflare Enterprise AI
 
-A Persian, document-grounded enterprise AI assistant for stores, construction companies, manufacturers, and business teams.
+A Persian and Arabic document-grounded enterprise AI assistant for stores, construction companies, manufacturers, and business teams.
 
-## OCR for scanned PDFs
+## Persian and Arabic RAG
 
-PDF and DOCX uploads are processed with Cloudflare Workers AI Markdown Conversion via `env.AI.toMarkdown()`. Cloudflare parses PDF pages and applies its supported OCR path for scanned PDFs, then returns plain text for chunking and RAG. The Worker uses `conversionOptions.output.format = "text"` and removes PDF metadata before embedding.
+The retrieval layer now uses Cloudflare-hosted `@cf/baai/bge-m3`, a multilingual embedding model, instead of the English-only BGE base model. Arabic/Persian diacritics and common spelling variants are normalized before embedding, while the original source text remains unchanged in D1 for citations. Answers follow the language of the question when it is Persian or Arabic.
 
-The MVP accepts PDF and DOCX files up to 10 MiB. Cloudflare's documented limits differ by PDF mode: PDFs with OCR enabled can be up to 10 MiB, while PDFs without OCR are limited to 4 MiB. If extraction returns no text, the Queue retries the message and logs an explicit extraction error instead of indexing an empty document.
-
-## Architecture
-
-- **Cloudflare Worker**: authenticated API for upload and chat.
-- **R2**: private source-document storage.
-- **Queues**: asynchronous indexing path.
-- **D1**: document and chunk metadata.
-- **Vectorize V2**: semantic retrieval filtered by `tenantId`.
-- **Workers AI Markdown Conversion**: PDF/DOCX extraction and OCR-capable conversion.
-- **Workers AI**: embeddings and grounded answer generation.
-
-GitHub stores code only. Do not upload confidential company documents to this repository.
-
-## Cloudflare setup
+This is a **breaking vector-index change**: Vectorize dimensions are fixed at index creation. Create the new multilingual index and re-index all existing documents before production:
 
 ```bash
-npx wrangler login
-npx wrangler r2 bucket create rog-enterprise-documents
-npx wrangler queues create rog-document-indexing
-npx wrangler d1 create rog-enterprise-db
-npx wrangler vectorize create rog-enterprise-vectors --dimensions=768 --metric=cosine
-npx wrangler vectorize create-metadata-index rog-enterprise-vectors --property-name=tenantId --type=string
+npx wrangler vectorize create rog-enterprise-vectors-multilingual --dimensions=1024 --metric=cosine
+npx wrangler vectorize create-metadata-index rog-enterprise-vectors-multilingual --property-name=tenantId --type=string
 npx wrangler d1 migrations apply rog-enterprise-db --remote
 npx wrangler deploy
 ```
 
-Copy the D1 database ID into `wrangler.toml` before deploy. For production, replace the demo `x-tenant-id` header with real authentication and authorization.
+Do not point the new Worker at the old 768-dimensional index. Existing documents must be uploaded again or re-queued after the new index is ready.
+
+## OCR and supported uploads
+
+PDF and DOCX files are converted by Cloudflare Workers AI Markdown Conversion, including its supported OCR path for scanned PDFs, before chunking and indexing. The MVP accepts `.txt`, `.md`, `.json`, `.pdf`, and `.docx` up to 10 MiB.
+
+## Architecture
+
+- Cloudflare Worker: upload, retrieval, and grounded answers.
+- R2: private source-document storage.
+- Queues: asynchronous indexing.
+- D1: original chunks and document metadata.
+- Vectorize V2: multilingual semantic retrieval filtered by `tenantId`.
+- Workers AI: BGE-M3 embeddings, PDF/DOCX conversion, and Qwen3 answer generation.
+
+GitHub stores code only. Never commit confidential company documents.
 
 ## API
 
 ```bash
 curl -X POST https://YOUR_WORKER/upload \
   -H 'x-tenant-id: acme' \
-  -F 'file=@scanned-contract.pdf'
+  -F 'file=@arabic-policy.pdf'
+
+curl -X POST https://YOUR_WORKER/chat \
+  -H 'content-type: application/json' \
+  -H 'x-tenant-id: acme' \
+  -d '{"question":"ما هي شروط الإرجاع؟"}'
 ```
 
-Indexing is asynchronous. The upload response is `202 queued`; wait for the queue consumer to mark the document ready before querying it.
+Indexing is asynchronous; wait for the queue to finish before asking questions.
 
-## References
+## Cloudflare references
 
-- https://developers.cloudflare.com/workers-ai/features/markdown-conversion/usage/binding/
-- https://developers.cloudflare.com/workers-ai/features/markdown-conversion/conversion-options/
-- https://developers.cloudflare.com/ai-search/configuration/data-source/
+- https://developers.cloudflare.com/workers-ai/models/bge-m3/
+- https://developers.cloudflare.com/vectorize/reference/metadata-filtering/
+- https://developers.cloudflare.com/workers-ai/features/markdown-conversion/

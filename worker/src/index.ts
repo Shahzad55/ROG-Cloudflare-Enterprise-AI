@@ -26,6 +26,27 @@ function requireTenant(request: Request): string {
   return tenant;
 }
 
+// Normalize Arabic/Persian spelling variants for retrieval without changing the stored source text.
+function normalizeRtl(text: string): string {
+  return text
+    .normalize("NFC")
+    .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, "")
+    .replace(/[إأآٱ]/g, "ا")
+    .replace(/ى/g, "ی")
+    .replace(/ئ/g, "ی")
+    .replace(/ؤ/g, "و")
+    .replace(/ة/g, "ه")
+    .replace(/ـ/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isArabicOrPersian(text: string): boolean {
+  const rtl = text.match(/[\u0600-\u06FF]/g)?.length || 0;
+  const latin = text.match(/[A-Za-z]/g)?.length || 0;
+  return rtl > 0 && rtl >= latin;
+}
+
 function chunks(text: string, size = 1200, overlap = 180): string[] {
   const clean = text.replace(/\s+/g, " ").trim();
   const result: string[] = [];
@@ -37,7 +58,7 @@ function chunks(text: string, size = 1200, overlap = 180): string[] {
 }
 
 async function embed(env: Env, texts: string[]) {
-  const response = (await env.AI.run(env.EMBEDDING_MODEL, { text: texts })) as EmbeddingResult;
+  const response = (await env.AI.run(env.EMBEDDING_MODEL, { text: texts.map(normalizeRtl) })) as EmbeddingResult;
   return response.data;
 }
 
@@ -47,7 +68,6 @@ async function upload(request: Request, env: Env) {
   const file = form.get("file");
   if (!(file instanceof File)) return json({ error: "file is required" }, 400);
   if (file.size > 10 * 1024 * 1024) return json({ error: "max file size is 10MB" }, 413);
-
   const extension = file.name.toLowerCase().split(".").pop() || "";
   const supported = ["txt", "md", "json", "pdf", "docx"];
   if (!supported.includes(extension)) return json({ error: "supported files: .txt, .md, .json, .pdf, .docx" }, 415);
@@ -68,21 +88,14 @@ async function upload(request: Request, env: Env) {
 async function extractText(object: R2ObjectBody, fileName: string, env: Env): Promise<string> {
   const extension = fileName.toLowerCase().split(".").pop() || "";
   if (!["pdf", "docx"].includes(extension)) return await object.text();
-
-  // Cloudflare Markdown Conversion handles PDF structure and OCR for scanned PDFs.
-  // Keep metadata off to reduce prompt noise; plain text is best for chunking/RAG.
   const blob = new Blob([await object.arrayBuffer()], {
-    type: object.httpMetadata?.contentType || (extension === "pdf"
-      ? "application/pdf"
-      : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    type: object.httpMetadata?.contentType || (extension === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
   });
   const converted = (await env.AI.toMarkdown(
     { name: fileName, blob },
     { conversionOptions: { output: { format: "text" }, pdf: { metadata: false } } },
   )) as MarkdownResult;
-  if (converted.format === "error" || !converted.data?.trim()) {
-    throw new Error(`OCR/text extraction failed for ${fileName}: ${converted.error || "no text detected"}`);
-  }
+  if (converted.format === "error" || !converted.data?.trim()) throw new Error(`OCR/text extraction failed for ${fileName}: ${converted.error || "no text detected"}`);
   return converted.data;
 }
 
@@ -93,11 +106,9 @@ async function indexDocument(message: IndexMessage, env: Env) {
   const parts = chunks(text);
   if (!parts.length) throw new Error("document contains no extractable text");
   const vectors = await embed(env, parts);
-
   await env.DB.prepare("DELETE FROM chunks WHERE document_id = ?").bind(message.documentId).run();
-  await env.DB.batch(parts.map((part, i) => env.DB.prepare("INSERT INTO chunks (id, document_id, tenant_id, chunk_index, text) VALUES (?, ?, ?, ?, ?)")
-    .bind(`${message.documentId}:${i}`, message.documentId, message.tenantId, i, part)));
-  await env.VECTORIZE.upsert(parts.map((part, i) => ({ id: `${message.documentId}:${i}`, values: vectors[i], metadata: { tenantId: message.tenantId, documentId: message.documentId, chunkIndex: i } })));
+  await env.DB.batch(parts.map((part, i) => env.DB.prepare("INSERT INTO chunks (id, document_id, tenant_id, chunk_index, text) VALUES (?, ?, ?, ?, ?)").bind(`${message.documentId}:${i}`, message.documentId, message.tenantId, i, part)));
+  await env.VECTORIZE.upsert(parts.map((part, i) => ({ id: `${message.documentId}:${i}`, values: vectors[i], metadata: { tenantId: message.tenantId, documentId: message.documentId, chunkIndex: i, language: isArabicOrPersian(part) ? "rtl" : "other" } })));
   await env.DB.prepare("UPDATE documents SET status = 'ready', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(message.documentId).run();
 }
 
@@ -105,16 +116,17 @@ async function chat(request: Request, env: Env) {
   const tenantId = requireTenant(request);
   const body = (await request.json()) as { question?: string };
   if (!body.question?.trim()) return json({ error: "question is required" }, 400);
+  const rtlQuestion = isArabicOrPersian(body.question);
   const [queryVector] = await embed(env, [body.question]);
   const matches = await env.VECTORIZE.query(queryVector, { topK: 5, returnMetadata: "all", filter: { tenantId } });
   const ids = matches.matches.map((m) => m.id);
-  if (!ids.length) return json({ answer: "در اسناد این شرکت پاسخی پیدا نشد.", sources: [] });
+  if (!ids.length) return json({ answer: rtlQuestion ? "در اسناد این شرکت پاسخی پیدا نشد." : "No answer was found in this company's documents.", sources: [] });
   const placeholders = ids.map(() => "?").join(",");
   const rows = await env.DB.prepare(`SELECT id, text FROM chunks WHERE id IN (${placeholders})`).bind(...ids).all<{ id: string; text: string }>();
   const byId = new Map(rows.results.map((row) => [row.id, row.text]));
   const context = matches.matches.map((m, i) => `[منبع ${i + 1}]\n${byId.get(m.id) || ""}`).join("\n\n");
   const answer = await env.AI.run(env.GENERATION_MODEL, { messages: [
-    { role: "system", content: "فقط بر اساس CONTEXT پاسخ بده. اگر پاسخ در آن نیست، بگو اطلاعات کافی در اسناد پیدا نشد. فارسی، کوتاه و بدون حدس پاسخ بده." },
+    { role: "system", content: `فقط بر اساس CONTEXT پاسخ بده. اگر پاسخ در آن نیست، ${rtlQuestion ? "به زبان سؤال بگو اطلاعات کافی در اسناد پیدا نشد" : "say that the documents do not contain enough information"}. ${rtlQuestion ? "به همان زبان سؤال، فارسی یا عربی، کوتاه و بدون حدس پاسخ بده." : "Answer in the language of the question, briefly and without guessing."}` },
     { role: "user", content: `CONTEXT:\n${context}\n\nQUESTION:\n${body.question}` },
   ] });
   return json({ answer, sources: matches.matches.map((m, i) => ({ label: `منبع ${i + 1}`, score: m.score })) });
@@ -125,7 +137,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers });
     try {
       const url = new URL(request.url);
-      if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
+      if (request.method === "GET" && url.pathname === "/health") return json({ ok: true, embeddingModel: env.EMBEDDING_MODEL });
       if (request.method === "POST" && url.pathname === "/upload") return upload(request, env);
       if (request.method === "POST" && url.pathname === "/chat") return chat(request, env);
       return json({ error: "Not found" }, 404);

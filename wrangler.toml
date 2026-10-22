@@ -18,7 +18,7 @@ migrations_dir = "migrations"
 
 [[vectorize]]
 binding = "VECTORIZE"
-index_name = "rog-enterprise-vectors"
+index_name = "rog-enterprise-vectors-multilingual"
 
 [[queues.producers]]
 binding = "INDEX_QUEUE"
@@ -31,5 +31,5 @@ max_batch_timeout = 30
 max_retries = 3
 
 [vars]
-EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"
-GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct"
+EMBEDDING_MODEL = "@cf/baai/bge-m3"
+GENERATION_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"
