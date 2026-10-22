@@ -1,19 +1,29 @@
 /* Adapted from the proven RTL/LTR handling in cloudflare-gpt-5.6-sol. */
 main[dir="rtl"] { direction: rtl; }
 
-/* Let mixed Persian, Arabic, English, URLs, and identifiers choose their own direction. */
-[dir="auto"], [dir="auto"] * {
+/* Let standalone user/model text choose its base direction. Do not force plaintext
+   onto every descendant: nested elements need their own bidi isolation. */
+[dir="auto"] {
   unicode-bidi: plaintext;
   text-align: start;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 textarea[dir="auto"], input[dir="auto"] {
-  unicode-bidi: plaintext;
-  text-align: start;
   direction: auto;
+  unicode-bidi: plaintext;
 }
 
-/* Keep model names, IDs, URLs, email addresses, and code visually stable inside RTL UI. */
+/* For dynamic inline values with unknown direction, use <bdi dir="auto">. */
+bdi[dir="auto"], .mixed-text {
+  direction: auto;
+  unicode-bidi: isolate;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Keep model names, IDs, URLs, email addresses, and code stable in RTL UI. */
 bdi, code, .latin, .source-url, .email, .model-id {
   unicode-bidi: isolate;
 }
@@ -23,19 +33,22 @@ code, .latin, .source-url, .email, .model-id {
   text-align: left;
 }
 
-/* Preserve readable wrapping for long URLs and mixed-script answers. */
-[dir="auto"], .answer, .doc, .source-chip, .modal {
+/* Code and URLs should never reorder punctuation around Persian text. */
+pre, pre code {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: left;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-/* Arabic shaping and Persian punctuation should never be forced into LTR. */
+/* Arabic and Persian shaping stays enabled without overriding their base direction. */
 :lang(ar), :lang(fa) {
   font-feature-settings: "calt" 1, "liga" 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *, *::before, *:after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
