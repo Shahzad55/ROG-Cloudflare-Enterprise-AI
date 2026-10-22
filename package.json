@@ -1,0 +1,14 @@
+{
+  "name": "rog-cloudflare-enterprise-ai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "wrangler types && tsc --noEmit",
+    "check": "npm run typecheck && wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
