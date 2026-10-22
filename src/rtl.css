@@ -1,0 +1,44 @@
+/* Adapted from the proven RTL/LTR handling in cloudflare-gpt-5.6-sol. */
+main[dir="rtl"] { direction: rtl; }
+
+/* Let mixed Persian, Arabic, English, URLs, and identifiers choose their own direction. */
+[dir="auto"], [dir="auto"] * {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+textarea[dir="auto"], input[dir="auto"] {
+  unicode-bidi: plaintext;
+  text-align: start;
+  direction: auto;
+}
+
+/* Keep model names, IDs, URLs, email addresses, and code visually stable inside RTL UI. */
+bdi, code, .latin, .source-url, .email, .model-id {
+  unicode-bidi: isolate;
+}
+
+code, .latin, .source-url, .email, .model-id {
+  direction: ltr;
+  text-align: left;
+}
+
+/* Preserve readable wrapping for long URLs and mixed-script answers. */
+[dir="auto"], .answer, .doc, .source-chip, .modal {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Arabic shaping and Persian punctuation should never be forced into LTR. */
+:lang(ar), :lang(fa) {
+  font-feature-settings: "calt" 1, "liga" 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
