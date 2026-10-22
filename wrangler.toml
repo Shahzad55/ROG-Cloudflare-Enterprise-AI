@@ -13,7 +13,7 @@ bucket_name = "rog-enterprise-documents"
 [[d1_databases]]
 binding = "DB"
 database_name = "rog-enterprise-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "3e50b6d4-370a-493b-8ac4-bd4b2b59e42a"
 migrations_dir = "migrations"
 
 [[vectorize]]
